@@ -1,27 +1,8 @@
-# Apply-ZimbraPermissions
+# Zimbra Tools
 
-This script uses exported Zimbra permissions, and maps them to Exchange permissions to
-assist in post-migration configuration of mailbox-related permissions.
+Script to support Zimbra migrations, such as picking shared mailboxes to add to user migration batches,
+or to map Zimbra permission exports to Exchange permissions during post-migration mailbox configuration.
 	
-## Prerequisites
-
-Script requires an active connection to the target Exchange environment, either through the 
-Exchange Management Shell or Exchange Online Management module.
-	
-## Usage
-
-```
-``Apply-Permissions.p1 -UsersFile Users.csv -PermissionsFile Permissions.csv
-Applies permissions from Permissions.csv using mailboxes specified in Users.csv.
-
-``Apply-Permissions.p1 -UsersFile Users.csv -PermissionsFolder C:\PermissionFiles -Confirm:$false 
-Applies permissions using permission files located in C:\PermissionFiles, using mailboxes specified in Users.csv. Script will not ask
-for confirmation for each operation.
-
-``Apply-Permissions.p1 -UsersFile Users.csv -PermissionsFile Permissions.csv -WhatIf:$true | Export-Csv PermissionReport.csv -NoTypeInformation    
-Export what permissions would be applied from Permissions.csv using mailboxes specified in Users.csv. Output is exported to PermissionReport.csv.
-```
-
 ## Contributing
 
 N/A
