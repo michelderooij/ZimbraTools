@@ -168,7 +168,8 @@ If( $PSCmdlet.ParameterSetName -eq 'FileMode') {
     Write-Host ('Total Permissions entries: {0} ..' -f ($Perms | Measure-Object).Count)
 }
 Else {
-    Get-ChildItem -Path $PermissionsFolder -Include *.*
+    $Perms= Get-ChildItem -Path $PermissionsFolder | ForEach { Import-Csv -Path $_.FullName -Delimiter ';' -Header 'Mailbox','Path','Type','Delegate','Perms','PermsDetails'}
+    Write-Host ('Total Permissions entries: {0} ..' -f ($Perms | Measure-Object).Count)
 }
 
 $BatchPerms= $Perms | Where-Object { $LookupUsers[ $_.Mailbox] -or ($_.Delegate -and $LookupUsers[ $_.Delegate]) } 
