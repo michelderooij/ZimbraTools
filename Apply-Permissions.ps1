@@ -8,7 +8,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE 
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 	
-    Version 1.0, January 12th, 2021
+    Version 1.0, January 19th, 2021
     
     .DESCRIPTION
     This script allows you map exported Zimbra mailbox permissions to Exchange Online, where
@@ -29,11 +29,11 @@
     usr     *                      r                   Reviewer                 Folder
     usr     *                      rwidx               Editor                   Folder
     usr     *                      rwidxa/rwidxp       Owner                    Folder
-    usr     doc/tsk/msg/cont/apt   r                   Reviewer                 Folder
-    usr     doc/tsk/msg/cont/apt   rwidx               Editor                   Folder
-    usr     doc/tsk/msg/cont/apt   rwidxa              Owner                    Folder
+    usr/grp doc/tsk/msg/cont/apt   r                   Reviewer                 Folder
+    usr/grp doc/tsk/msg/cont/apt   rwidx               Editor                   Folder
+    usr/grp doc/tsk/msg/cont/apt   rwidxa              Owner                    Folder
     usr     ROOT                   rwidxa/rwidx        FullAccess+SendAs        Mailbox
-    usr     ROOT                   r                   Reviewer                 Folder
+    usr     ROOT                   r                   ReadPermission           Mailbox
     pub     appointment            r                   Default/LimitedDetails   Folder (Calendar)
     guest   appointment            r                   Anonymous/AvailOnly      Folder (Calendar)
     all     contact                r                   Default/Reviewer         Folder
@@ -70,8 +70,8 @@
 
     Changelog
     --------------------------------------------------------------------------------
-    0.1     Initial public release
-    
+    1.0    Initial public release
+
     .PARAMETER UsersFile
     CSV file containing entries of mailboxes to process. Only column in the CSV file should be
     EmailAddress, containing the e-mail addresses of mailboxes you want to process. This parameter
@@ -95,10 +95,19 @@
     .PARAMETER PermissionsFolder
     Specifies the folder containing individual files with per-mailbox permissions. The layout of these files need to be
     the same as  when a PermissionsFile. Specifying PermissionsFile or PermissionsFolder is mandatory. When specifying PermissionsFolder,
-    you cannot specify PermissionsFile.
+    you cannot specify PermissionsFile. Note that permission files have no extension and similar to PermissionsFile, no header.
 
     .PARAMETER AutoMapping
     Indicates if AutoMapping should be used when assigning Full Access permissions. Default is false.
+
+    .PARAMETER SendNotificationToUser
+    Whether sharing invitations are sent to delegates when appropriate user-assigned calender permissions are applied, 
+    i.e. AvailabilityOnly, LimitedDetails, Reviewer or Editor.
+
+    .PARAMETER SharingPermissionFlags
+    Whether calendar delegate permissions are configured when appropriate user-assigned calendar permissions are applied, i.e. Editor.
+    You can specify one or more of values None (Default), Delegate or CanViewPrivateItems. For more information, see
+    https://docs.microsoft.com/en-us/powershell/module/exchange/add-mailboxfolderpermission.
 
     .EXAMPLE
     Apply-Permissions.p1 -UsersFile Users.csv -PermissionsFile Permissions.csv
@@ -126,6 +135,13 @@ param(
     [parameter( Mandatory=$false, ParameterSetName='FileMode')]
     [parameter( Mandatory=$false,ParameterSetName='FolderMode')]
     [bool]$AutoMapping=$false,
+    [parameter( Mandatory=$false, ParameterSetName='FileMode')]
+    [parameter( Mandatory=$false,ParameterSetName='FolderMode')]
+    [ValidateSet('None', 'Delegate', 'CanViewPrivateItems')]
+    [string[]]$SharingPermissionFlags='None',
+    [parameter( Mandatory=$false, ParameterSetName='FileMode')]
+    [parameter( Mandatory=$false,ParameterSetName='FolderMode')]
+    [bool]$SendNotificationToUser=$false,
     [parameter( Mandatory=$true, ParameterSetName='FileMode')]
     [ValidateScript({ Test-Path -Path $_ -PathType Leaf})]
     [string]$PermissionsFile,
@@ -147,17 +163,22 @@ Write-Host ('Batch {0} users: {1}' -f $UsersFile, ($Users | Measure-Object).Coun
 $LookupUsers= @{}
 $Users | ForEach-Object { $LookupUsers[ $_.EmailAddress]= $_ }
 
-$Perms= Import-Csv -Path $PermissionsFile -Delimiter ';' -Header 'Mailbox','Path','Type','Delegate','Perms','PermsDetails'
-Write-Host ('Total Permissions entries: {0} ..' -f ($Perms | Measure-Object).Count)
+If( $PSCmdlet.ParameterSetName -eq 'FileMode') {
+    $Perms= Import-Csv -Path $PermissionsFile -Delimiter ';' -Header 'Mailbox','Path','Type','Delegate','Perms','PermsDetails'
+    Write-Host ('Total Permissions entries: {0} ..' -f ($Perms | Measure-Object).Count)
+}
+Else {
+    Get-ChildItem -Path $PermissionsFolder -Include *.*
+}
 
 $BatchPerms= $Perms | Where-Object { $LookupUsers[ $_.Mailbox] -or ($_.Delegate -and $LookupUsers[ $_.Delegate]) } 
-Write-Host ('In-Batch Permissions entries: {0} ..' -f ($BatchPerms | Measure-Object).Count)
+Write-Host ('Applicable permissions entries: {0} ..' -f ($BatchPerms | Measure-Object).Count)
 
 ForEach( $Perm in $BatchPerms) {
 
     If(!( Get-Mailbox -Identity $Perm.Mailbox -ErrorAction SilentlyContinue)) {
 
-        Write-Host ('Mailbox not found used in permission: {0}-{1}-{2}[{3}]' -f $Perm.Mailbox, $Perm.Type, $Perm.Perms, $Perm.PermsDetails) -ForegroundColor Red
+        Write-Host ('Mailbox not found used in permission: {0}' -f $Perm.Mailbox) -ForegroundColor Red
     }
     Else {
 
@@ -166,10 +187,13 @@ ForEach( $Perm in $BatchPerms) {
             Path= $Perm.Path
             Type= $Perm.Type
             Perms= '{0}[{1}]' -f $Perm.Perms, $Perm.PermsDetails
+            Notify= $null
+            Flags= $null
         }
 
         # Lookup the actual folder when processing certain 'well-known' folders to accomodate for localization.
         # Note: We Where-filter on Foldertype 'again', as for example FolderType Calendar will also return unmoveable folder 'Birthdays'.
+        $IsCal= $false
         Switch -regex( $Perm.Path) {
             '^/Inbox(/.*)?$' {
                 $FolderName = (Get-MailboxFolderStatistics -Identity $Perm.Mailbox -FolderScope Inbox | Where-Object {-not $_.Movable -and $_.FolderType -eq 'Inbox'} | Select-Object -First 1).Name     
@@ -178,6 +202,7 @@ ForEach( $Perm in $BatchPerms) {
             '^/Calendar(/.*)?$' {
                 $FolderName = (Get-MailboxFolderStatistics -Identity $Perm.Mailbox -FolderScope Calendar | Where-Object {-not $_.Movable -and $_.FolderType -eq 'Calendar'} | Select-Object -First 1).Name 
                 $ExchangeFolderId= '{0}:{1}' -f $Perm.Mailbox, (($Perm.Path -replace '/Calendar', ('\{0}' -f $FolderName)) -replace '/', '\')
+                $IsCal= $true
             }
             '^/Tasks(/.*)?$' {
                 $FolderName = (Get-MailboxFolderStatistics -Identity $Perm.Mailbox -FolderScope Tasks | Where-Object {-not $_.Movable -and $_.FolderType -eq 'Tasks'} | Select-Object -First 1).Name 
@@ -218,7 +243,7 @@ ForEach( $Perm in $BatchPerms) {
                     '^r$' {
                         $obj | Add-Member -Type NoteProperty -Name 'Action' -Value ('Grant Reviewer on {0} to {1}' -f $ExchangeFolderId, $Perm.Delegate)
                         If ($PSCmdlet.ShouldProcess($obj.Action, 'Are you sure you want to perform this action?')) {  
-                            Add-MailboxFolderPermission -Identity $ExchangeFolderId -User $Perm.Delegate -AccessRights Reviewer | Out-Null
+                            Add-MailboxPermission -Identity $ExchangeFolderId -User $Perm.Delegate -AccessRights ReadPermission -InheritanceType All | Out-Null
                         }
                     }
                     default {
@@ -258,18 +283,33 @@ ForEach( $Perm in $BatchPerms) {
                             Add-MailboxFolderPermission -Identity $ExchangeFolderId -User Default -AccessRights Reviewer | Out-Null
                         }
                     }
-                    'usr' {
+                    default {
+                        # usr/grp
                         switch( $Perm.PermsDetails) {
                             'r' {
                                 $obj | Add-Member -Type NoteProperty -Name 'Action' -Value ('Grant Reviewer on {0} to {1}' -f $ExchangeFolderId, $Perm.Delegate)
                                 If ($PSCmdlet.ShouldProcess($obj.Action, 'Are you sure you want to perform this action?')) {  
-                                    Add-MailboxFolderPermission -Identity $ExchangeFolderId -User $Perm.Delegate -AccessRights Reviewer | Out-Null
+                                    If( $IsCal) {
+                                        Add-MailboxFolderPermission -Identity $ExchangeFolderId -User $Perm.Delegate -AccessRights Reviewer -SharingPermissionFlags $SharingPermissionFlags -SendNotificationToUser $SendNotificationToUser | Out-Null
+                                        $obj.Notify= $SendNotificationToUser
+                                        $obj.Flags= $SharingPermissionFlags
+                                    }
+                                    Else {
+                                        Add-MailboxFolderPermission -Identity $ExchangeFolderId -User $Perm.Delegate -AccessRights Reviewer | Out-Null
+                                    }
                                 }
                             }
                             'rwidx' {
                                 $obj | Add-Member -Type NoteProperty -Name 'Action' -Value ('Grant Editor on {0} to {1}' -f $ExchangeFolderId, $Perm.Delegate)
                                 If ($PSCmdlet.ShouldProcess($obj.Action, 'Are you sure you want to perform this action?')) {  
-                                    Add-MailboxFolderPermission -Identity $ExchangeFolderId -User $Perm.Delegate -AccessRights Editor | Out-Null
+                                    If( $IsCal) {
+                                        Add-MailboxFolderPermission -Identity $ExchangeFolderId -User $Perm.Delegate -AccessRights Editor -SharingPermissionFlags $SharingPermissionFlags -SendNotificationToUser $SendNotificationToUser | Out-Null
+                                        $obj.Notify= $SendNotificationToUser
+                                        $obj.Flags= $SharingPermissionFlags
+                                    }
+                                    Else {
+                                        Add-MailboxFolderPermission -Identity $ExchangeFolderId -User $Perm.Delegate -AccessRights Editor | Out-Null
+                                    }
                                 }
                             }
                             'rwidxa' {
@@ -288,9 +328,6 @@ ForEach( $Perm in $BatchPerms) {
                                 Write-Host ('Unsupported permission combination: {0}-{1}-{2}[{3}]' -f $Perm.Mailbox, $Perm.Type, $Perm.Perms, $Perm.PermsDetails) -ForegroundColor Red
                             }
                         }
-                    }
-                    default {
-                        Write-Host ('Unsupported permission combination: {0}-{1}-{2}[{3}]' -f $Perm.Mailbox, $Perm.Type, $Perm.Perms, $Perm.PermsDetails) -ForegroundColor Red
                     }
                 }
             }
