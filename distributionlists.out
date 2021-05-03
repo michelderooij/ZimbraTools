@@ -1,0 +1,13 @@
+# distributionList planning@contoso.com memberCount=5
+zimbraACE: henk@contoso.com usr ownDistList
+zimbraACE: jaap@contoso.com usr ^sendToDistList
+zimbraMailAlias: planning@contoso.com
+zimbraMailAlias: plan@contoso.com
+zimbraMailStatus: enabled
+
+members
+henk@contoso.com
+ingrid@contoso.com
+jaap@contoso.com
+fred@contoso.com
+ibrahim@contoso.com
