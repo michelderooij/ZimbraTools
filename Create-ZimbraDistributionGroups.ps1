@@ -45,7 +45,7 @@ ForEach($Line in $DGFileData) {
                     Status= $null
                     ManagedBy= [System.Collections.ArrayList]@()
                     AuthSenders= [System.Collections.ArrayList]@()
-                    Parent= [System.Collections.ArrayList]@()
+                    ChildrenDG= [System.Collections.ArrayList]@()
                 }
                 $null= $DGData[ $Name].EmailAddresses.Add( 'SMTP:{0}' -f $Name)
                 If( $ACEStack) {
@@ -124,11 +124,6 @@ ForEach($Line in $DGFileData) {
             If( $MembersMode) {
                 Write-Verbose ('{0}: Member {1}' -f $activeDG, $Line)
                 $null= $DGData[ $activeDG].Members.Add( $Line)
-
-                # Keep record of parents so we can create DG's bottom-up
-                If( $DGData[ $Line]) {
-                    $null= $DGData[ $activeDG].Parent.Add( $Line)
-                }
             }
             Else {
                 If( [string]::IsNullOrEmpty( $Line)) {
@@ -142,9 +137,19 @@ ForEach($Line in $DGFileData) {
     }
 }
 
+# Keep track of DGs that are member of another DG (so we can process them in proper order)
+ForEach( $DG in $DGData.GetEnumerator()) {
+    ForEach( $Member in $DGData[ $DG.Name].Members) {
+        If( $DGData[ $Member]) {
+            $null= $DGData[ $Member].ChildrenDG.Add( $DG.Name)
+        }
+    }
+}
+
 $DGData= $DGData.GetEnumerator() | Select -expandProperty Value
 
-$DGProcessed= $DGData | Sort-Object -Property Parent | Where {$_.Name -like $Filter}
+# Determine data set to work with
+$DGProcessed= $DGData | Sort -Property @{Expression= {$_.ChildrenDG.Count}; Descending= $True} | Where {$_.Name -like $Filter}
 
 If( $Create) {
     ForEach( $DG in $DGProcessed) {
@@ -220,7 +225,8 @@ If( $Create) {
         Set-DistributionGroup -Identity $DG.Identity @UpdateParms
 
         If( $DG.Members) {
-            $ValidMembers= $DG.Members | Get-EXORecipient -ErrorAction SilentlyContinue -Verbose:$False | Select -expandProperty primarySmtpAddress
+            # First, filter the unique ID, later filter unique again to handle specified aliases instead of primary SMTP addresses
+            $ValidMembers= $DG.Members | Select -Unique | Get-EXORecipient -ErrorAction SilentlyContinue -Verbose:$False | Select -Unique -expandProperty primarySmtpAddress 
             Write-Host ('Added {1} validated members of {0} for {2}..' -f ($DG.members | measure).Count, ( $ValidMembers | Measure).Count, $DG.Name)
             Update-DistributionGroupMember -Identity $DG.Identity -Members $ValidMembers -BypassSecurityGroupManagerCheck -Confirm:$false
         }
